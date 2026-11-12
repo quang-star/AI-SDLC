@@ -1,0 +1,6 @@
+{
+  "ba": "ag/gemini-3.8-flash",
+  "dev": "cx/gpt-6.1-sol",
+  "reviewer": "ag/claude-sonnet-4-6",
+  "tester": "glm/glm-5.3-flash"
+}

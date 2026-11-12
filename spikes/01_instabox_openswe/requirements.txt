@@ -1,0 +1,4 @@
+deepagents==0.7.36
+instabox-sdk==0.5.2
+langchain-openai==1.7.4
+pytest
