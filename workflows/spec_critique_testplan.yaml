@@ -1,0 +1,20 @@
+name: spec_critique_testplan
+version: "2.0"
+description: Multi-turn read-only QA critique and AC-to-TestCase generation workflow.
+max_rounds: 2
+allowed_tools:
+  - read_repo_context
+  - read_task_spec
+forbidden_tools:
+  - shell
+  - write_file
+  - git_push
+  - network_fetch
+roles:
+  - id: qa_strategist
+    role: qa_critique
+    instruction: "Review TaskSpec acceptance criteria against RepoContext and map each AC to concrete TestCaseSpec entries."
+  - id: spec_critic
+    role: qa_critique
+    instruction: "Identify ambiguous criteria, contradictions, missing edge cases, or out-of-scope edits."
+output_contract: TestPlan

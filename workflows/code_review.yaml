@@ -1,0 +1,22 @@
+name: code_review
+version: "2.0"
+description: Independent read-only diff review against TaskSpec and VerificationReport.
+max_rounds: 2
+allowed_tools:
+  - read_repo_context
+  - read_task_spec
+  - read_patch_diff
+  - read_verification_report
+forbidden_tools:
+  - shell
+  - write_file
+  - git_push
+  - network_fetch
+roles:
+  - id: architecture_reviewer
+    role: reviewer
+    instruction: "Inspect code diff for maintainability, boundary violations, error handling, and adherence to TaskSpec."
+  - id: security_reviewer
+    role: reviewer
+    instruction: "Check diff for secret leaks, auth bypass, unsafe path/SQL/command handling, or forbidden scope changes."
+output_contract: ReviewReport
