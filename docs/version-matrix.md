@@ -1,9 +1,16 @@
 # Version Matrix & Integration Feasibility Report
 
+> **Latest Phase 2 live result (2026-11-13): PASS**, run `b97f217b2b8e`.
+> Verified saved report/patch: baseline 4/4, post 19/19, 14 new Red-to-Green cases,
+> 2 changed files, no static gate findings. Red and Green used separate snapshot
+> VMs; user log confirms all VMs and snapshot deleted. See [live evidence](phase-2-live-smoke.md).
+> The earlier `/opt` provisioning failure was fixed by using `/data`.
+> References to Phase 2 `LIVE NOT RUN` below describe the earlier offline milestone.
+
 > **Hướng model hiện tại — 9Router + nhiều model:** Model ID không có prefix đi
 > qua 9Router mặc định. Có thể chọn `--models` hoặc mapping vai trò
 > `NINE_ROUTER_ROLE_MODELS` + `--roles`. Không hardcode model Anthropic mặc định.
-> **139 test offline PASS; Phase 1 live PASS cho Dev và Reviewer** theo log người
+> **147 test offline PASS; Phase 1 live PASS cho Dev và Reviewer** theo log người
 > dùng cung cấp (VM đã xóa; BA/Tester chưa chạy). Harness **Phase 2 đạt OFFLINE PASS
 > / LIVE NOT RUN** (chỉ kiểm tra luồng bugfix + snapshot + Hard Gates của Spike 01,
 > chưa phải AI SDLC hoàn chỉnh). Xem [kết quả live](phase-1-live-smoke.md),
@@ -15,8 +22,8 @@
 > `OPENAI_API_KEY`). Xem [hướng dẫn chạy](../spikes/01_instabox_openswe/README.md).
 > Toàn bộ **100 test offline PASS**, gồm kiểm tra HTTP giả lập cho URL, model ID,
 > authorization và tool calling. Đây là mốc offline trước khi bổ sung multi-model;
-> mốc gần nhất sau đó là 127 test offline, và hiện tại là **139 test offline PASS**
-> sau khi bổ sung harness Phase 2 (Phase 2 vẫn `LIVE NOT RUN`).
+> các mốc gần nhất là 127 và 139 test offline, và hiện tại là **147 test offline PASS**
+> sau khi hoàn thiện và gia cố harness Phase 2 (Phase 2 vẫn `LIVE NOT RUN`).
 
 > **Ngày kiểm tra mã nguồn:** 2026-11-13  
 > **Trạng thái kiểm thử thực tế:** Phase 1 `LIVE PASS` với hai model Dev/Reviewer
@@ -46,9 +53,9 @@
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Open SWE (`main` - Robin)** | `langchain-ai/open-swe` | `main` @ `993082970f0894a80180ad6671dfe40b95c0ce5d` (2026-11-12) | `>=3.14` | MIT *(loại trừ `vendor/`)* | `NOT RUN` | Phụ thuộc `managed-deepagents` (`vendor/`) và chỉ kết nối LangSmith Sandbox do MDA tạo. Không dùng nguyên trạng cho MVP. |
 | **Open SWE (Phương án 1B)** | `langchain-ai/open-swe` | Commit `5308cc586a9f8bbc1f8f7a83732b20a8cdf46211` (2026-10-16) | `>=3.14` | MIT | `NOT RUN` | Bản cuối trước MDA; còn `SANDBOX_TYPE` registry. Máy host hiện mới có Python `3.12` & `3.13` (cần cài `3.14` nếu muốn test 1B). |
-| **Deep Agents (Phương án 1A)** | `deepagents` (PyPI) / `langchain-ai/deepagents` | `deepagents==0.7.36` (PyPI) | `>=3.11, <4.0` | MIT | `OFFLINE PASS` (139 tests toàn spike) / `LIVE PASS` (Phase 1, log người dùng) / `Phase 2: OFFLINE PASS, LIVE NOT RUN` | Phase 1: Agent Dev và Reviewer ghi file riêng khớp chính xác bytes trên InstaBox qua 9Router local. Phase 2 (`run_phase2_spike.py`, `phase2_verifier.py`): đã kiểm tra offline (Hard Gates + Red -> Green trên fixture thật + runner mock), chưa chạy live trên InstaBox và chưa phải AI SDLC hoàn chỉnh. |
-| **InstaBox SDK** | `instabox-sdk` (PyPI) | `instabox-sdk==0.5.2` (PyPI) | `>=3.9` (tài liệu ghi `3.9–3.13`) | Dịch vụ Cloud (SDK dùng `httpx`) | `OFFLINE PASS` (139 tests toàn spike) / `LIVE PASS` (Phase 1, log người dùng) / `Phase 2: OFFLINE PASS, LIVE NOT RUN` | Live PASS (Phase 1): create, execute/timeout, binary round-trip, BaseSandbox file tools, cleanup VM. Phase 2 snapshot (`snapshots.create/get/delete`), `machines.restore` và fallback/recovery hiện được kiểm tra offline, chưa chạy live. |
-| **MetaGPT** | `FoundationAgents/MetaGPT` | `main` @ `11cdf466d042aece04fc6cfd13b28e1a70341b1f` (2026-01-21) | Không ghi rõ trần trong `setup.py`, nhưng pin `aiohttp==3.8.6`, `numpy~=1.26.4` | MIT | `NOT RUN` | `aiohttp==3.8.6` không có wheel prebuilt cho Python 3.12+ trên Windows (dễ lỗi build C extension). Cần smoke test cài đặt thực tế (có thể cần Python 3.10/3.11 hoặc chỉ tách phần gọi LLM/ActionNode). |
+| **Deep Agents (Phương án 1A)** | `deepagents` (PyPI) / `langchain-ai/deepagents` | `deepagents==0.7.36` (PyPI) | `>=3.11, <4.0` | MIT | `OFFLINE PASS` (147 tests toàn spike) / `LIVE PASS` (Phase 1, log người dùng) / `Phase 2: OFFLINE PASS, LIVE NOT RUN` | Phase 1: Agent Dev và Reviewer ghi file riêng khớp chính xác bytes trên InstaBox qua 9Router local. Phase 2 (`run_phase2_spike.py`, `phase2_verifier.py`): đã kiểm tra offline (Hard Gates + Red/Green tách biệt từ snapshot + pytest exit code), chưa chạy live trên InstaBox và chưa phải AI SDLC hoàn chỉnh. |
+| **InstaBox SDK** | `instabox-sdk` (PyPI) | `instabox-sdk==0.5.2` (PyPI) | `>=3.9` (tài liệu ghi `3.9–3.13`) | Dịch vụ Cloud (SDK dùng `httpx`) | `OFFLINE PASS` (147 tests toàn spike) / `LIVE PASS` (Phase 1, log người dùng) / `Phase 2: OFFLINE PASS, LIVE NOT RUN` | Live PASS (Phase 1): create, execute/timeout, binary round-trip, BaseSandbox file tools, cleanup VM. Phase 2 snapshot (`snapshots.create/get/delete`), `machines.restore` hai pha cô lập và fallback/recovery hiện được kiểm tra offline, chưa chạy live. |
+| **MetaGPT** | `FoundationAgents/MetaGPT` | `main` @ `11cdf466d042aece04fc6cfd13b28e1a70341b1f` (2026-01-21) | `0.8.2` (`>=3.9, <3.12`), pin 148 gói (`lancedb==0.4.0`, `aiohttp==3.8.6`, `semantic-kernel==0.4.3.dev0`) | MIT | `INSTALL BLOCKED (PyPI)` / `SPIKE 02 OFFLINE PASS (7 tests) & LIVE PASS (ag/gemini-3.8-flash)` | Smoke test cài `metagpt==0.8.2` trên Python `3.11.18` thất bại vì `lancedb==0.4.0` không còn trên PyPI (và `--no-deps` vướng `_compat.py`/`__init__.py`). Đã tách phần `ActionNode` + `ProductManager` + `[CONTENT]` + self-repair sang `spikes/02_metagpt_ba/` (`openai`, `pydantic`, `httpx`, `pip check` sạch). Live BA smoke test qua 9Router `ag/gemini-3.8-flash` trên `mini_bug_repo` đã PASS lần thử đầu (`repair_attempts=0`, `spec-validate-discount-percen-40a87bef` v1). |
 | **ChatDev 2.0 (DevAll)** | `OpenBMB/ChatDev` | `main` @ `464a681ba7bda869db97a50c5fa707c9a0fb57a0` (2026-10-30) | `>=3.12, <3.13` | Apache-2.0 | `NOT RUN` | Khớp với Python `3.12` có sẵn trên máy. Cần smoke test chạy một workflow YAML tối giản không bật tool thực thi code. |
 | **ChatDev 1.0 (Legacy)** | `OpenBMB/ChatDev` | `chatdev1.0` @ `31fd994416a251ecdeb1f0a73c329271743bfb56` | `3.9 – 3.11` | Apache-2.0 | `NOT RUN` | Nhánh dự phòng. Pin `numpy==1.24.3`, `openai==1.47.1`. |
 
@@ -104,7 +111,7 @@ Mặc dù `BaseSandbox` chỉ đánh dấu `@abstractmethod` ở 4 nơi (`id`, `
 1. **Chính sách đối với file test cũ (`existing_test_files` tại `base_commit_sha`):**
    - **Quy tắc đơn giản cho MVP:** Agent **chỉ được thêm file test mới**. Mọi thay đổi (sửa hoặc xóa) trên bất kỳ file test nào đã tồn tại ở `base_commit_sha` đều tự động đánh dấu `NEEDS_HUMAN_REVIEW` (không tự động cho qua).
 2. **Chính sách đối với cấu hình chạy test và môi trường (`protected_config_paths`):**
-   - Đưa các file cấu hình test/build (`pyproject.toml`, `pytest.ini`, `setup.cfg`, `tox.ini`, `conftest.py` gốc, `.github/**`, script CI) vào danh sách kiểm soát:
+   - Đưa các file cấu hình test/build (`pyproject.toml`, `pytest.ini`, `setup.cfg`, `tox.ini`, `conftest.py` ở mọi cấp thư mục như `conftest.py` hay `tests/conftest.py`, `.github/**`, script CI) vào danh sách kiểm soát:
      - Nếu task không yêu cầu sửa dependency/config: xếp vào `forbidden_paths` (`REJECT` ngay nếu chạm vào).
      - Nếu task có yêu cầu: bắt buộc chuyển `NEEDS_HUMAN_REVIEW`.
 
@@ -121,10 +128,10 @@ Tất cả các bước dưới đây do **script của Orchestrator/Spike gọi
      - Xuất toàn bộ bản vá (patch) ra ngoài VM.
    - **Chạy kiểm tra trong môi trường sạch xuất phát từ Snapshot trước khi Agent chạy (Pre-Agent Snapshot Verification):**
      - Fork máy sau khi agent chạy hoặc chỉ tạo git branch sạch trên cùng máy **vẫn giữ nguyên các thay đổi ngoài Git** (như package cài đè vào `.venv`, binary hệ thống bị sửa, biến môi trường, tiến trình ngầm).
-     - Do đó, ở Bước 1 (trước khi giao máy cho Agent), Orchestrator phải chụp một snapshot gốc (`pre_agent_snapshot_id`) hoặc khởi tạo môi trường verify từ đúng snapshot/template ban đầu trước khi agent chạm vào máy, sau đó chỉ apply bản patch hợp lệ và chạy `/path/to/clean/pytest --junitxml=/tmp/post_junit.xml`.
+     - Do đó, ở Bước 1 (trước khi giao máy cho Agent), Orchestrator phải chụp một snapshot gốc (`pre_agent_snapshot_id`). Khi kiểm tra hậu kiểm (kể cả khi chạy bước Red rồi mới chạy bước Green), mỗi pha Red và Green đều phải chạy trên một **VM sạch mới tạo hoặc một lần restore riêng biệt** từ `pre_agent_snapshot_id` (tuyệt đối không chỉ `git reset` rồi tái sử dụng môi trường sau Red cho Green), và bắt buộc Green đạt `pytest` exit code `0` (mọi lỗi collection/internal/interrupted đều bị `REJECT` dù JUnit XML có test pass).
    - **So sánh trạng thái `baseline_status` vs `post_status` & Quy tắc `tdd_exempt`:**
      - **Không thoái lui (No Regression):** Mọi `test_id` có trong `baseline_status` không được chuyển từ `passed` sang `failed`/`error`/`skipped`, và không được biến mất khỏi báo cáo.
-     - **Test mới & Ngoại lệ `tdd_exempt`:** Mặc định phải có ít nhất 1 `test_id` mới nằm trong file test mới fail vì đúng lỗi ở bước Red và chuyển sang `passed` ở bước Green. Cờ `tdd_exempt: true` **chỉ miễn yêu cầu có test fail trước khi sửa (bước Red)**, tuyệt đối **không miễn kiểm chứng kết quả sau khi sửa**; báo cáo thực thi bắt buộc phải ghi rõ phương pháp và bằng chứng kiểm chứng thay thế (ví dụ: kết quả chạy suite hiện có, kiểm tra build/lint/schema, hoặc hướng dẫn kiểm tra thủ công có log đính kèm).
+     - **Test mới (post-hoc baseline failure -> post-patch pass) & Ngoại lệ `tdd_exempt`:** Mặc định phải có ít nhất 1 `test_id` mới nằm trong file test mới fail (`exit_code == 1`) khi chạy lại trên code baseline (Red) và chuyển sang `passed` (`exit_code == 0`) sau khi áp dụng full patch (Green). Lưu ý: bước Red này chạy lại test mới trên baseline *sau khi agent đã hoàn thành* để chứng minh test phát hiện được lỗi ở baseline, chưa chứng minh agent tự viết test trước khi sửa code theo thứ tự TDD. Cờ `tdd_exempt: true` **chỉ miễn bước chạy Red trên baseline**, tuyệt đối **không miễn kiểm chứng kết quả sau khi sửa**; báo cáo thực thi bắt buộc phải ghi rõ phương pháp và bằng chứng kiểm chứng thay thế (ví dụ: kết quả chạy suite hiện có, kiểm tra build/lint/schema, hoặc hướng dẫn kiểm tra thủ công có log đính kèm).
 
 ---
 
@@ -139,5 +146,5 @@ Tất cả các bước dưới đây do **script của Orchestrator/Spike gọi
    - Sandbox smoke, hai agent ghi file riêng và cleanup VM đều PASS. BA/Tester chưa chạy.
    - Phạm vi hiện tại của runner **chỉ** kiểm tra thao tác sandbox và agent ghi file; chưa thực hiện `pre_agent_snapshot_id`, chạy `pytest` repo thử nghiệm hay verify độc lập. Xem [kết quả live](phase-1-live-smoke.md).
 4. **Phase 2: Chạy 1 task bugfix & Verify độc lập trên repo thử nghiệm — Trạng thái: `OFFLINE PASS / LIVE NOT RUN`:**
-   - Đã cài đặt `spikes/01_instabox_openswe/run_phase2_spike.py`, `phase2_verifier.py`, `spike_common.py` và repo fixture `fixtures/mini_bug_repo`: ghi nhận `base_commit_sha`, baseline `pytest` JUnit XML, hash file cấu hình bảo vệ, tạo `pre_agent_snapshot_id`, chạy Deep Agent sửa bug, sau đó kiểm tra Hard Gates và verify độc lập Red -> Green (mặc định bằng VM mới từ `pre_agent_snapshot_id` hoặc `--verify-mode restore`), cuối cùng xóa VM và snapshot nghiêm ngặt.
-   - Đã kiểm chứng offline (unit test Hard Gates/JUnit/git `-z`, chạy `git` + `pytest` thật trên `fixtures/mini_bug_repo`, và lifecycle mock InstaBox), **chưa chạy live trên VM InstaBox thật** (`LIVE NOT RUN`). Phạm vi chỉ là Spike 01 bugfix + verify độc lập, chưa phải hệ thống AI SDLC hoàn chỉnh.
+   - Đã cài đặt `spikes/01_instabox_openswe/run_phase2_spike.py`, `phase2_verifier.py`, `spike_common.py` và repo fixture `fixtures/mini_bug_repo`: lọc secret/symlink trước khi đọc file upload, ghi nhận `base_commit_sha`, baseline `pytest` JUnit XML (`exit_code` hợp lệ), hash file cấu hình bảo vệ (`conftest.py` ở mọi cấp), tạo `pre_agent_snapshot_id`, chạy Deep Agent sửa bug, kiểm tra Hard Gates, chạy lại test mới trên baseline (Red post-hoc) và full patch (Green) trên **hai pha snapshot tách biệt** (`fresh-vm` riêng cho Red/Green hoặc 2 lần `--verify-mode restore`), bắt buộc Green `exit_code == 0`, và xóa VM/snapshot nghiêm ngặt.
+   - Đã kiểm chứng offline (147 tests gồm unit Hard Gates/JUnit/git `-z`, `git` + `pytest` thật trên fixture, và lifecycle mock InstaBox), **chưa chạy live trên VM InstaBox thật** (`LIVE NOT RUN`). Phạm vi chỉ là Spike 01 bugfix + verify độc lập (không chứng minh agent chạy đúng thứ tự TDD), chưa phải hệ thống AI SDLC hoàn chỉnh.

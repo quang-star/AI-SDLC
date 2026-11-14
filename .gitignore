@@ -22,3 +22,16 @@ spikes/*/artifacts/
 # OS & editor files
 .DS_Store
 Thumbs.db
+
+# Node / frontend build artifacts
+node_modules/
+apps/web/dist/
+
+# Packaging, local dev state & pytest temp artifacts
+*.egg-info/
+build/
+.local_dev/
+pytest-of-*/
+*.db
+*.sqlite
+*.sqlite3

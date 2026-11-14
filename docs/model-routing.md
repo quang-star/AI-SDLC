@@ -1,5 +1,10 @@
 # Cấu hình model cho AI SDLC qua 9Router
 
+> Phạm vi sản phẩm đã chọn: **SaaS cho nhiều khách hàng độc lập**. Xem
+> [roadmap sản phẩm P0–P14](saas-product-roadmap.md) cho kiến trúc, checklist và
+> tiêu chí GA. 9Router local phục vụ phát triển; production cần gateway do backend
+> quản lý cùng ranh giới tenant, credentials, quota và usage ledger.
+
 ## Quyết định hiện tại
 
 9Router là gateway LLM mặc định. Model selection tách khỏi engine thực thi:
@@ -38,7 +43,7 @@ Bare ID tự thêm `9router:`; prefix LangChain rõ ràng vẫn được giữ �
 Chọn `9router:<id>` nếu route ID chứa dấu `:`.
 
 Xem [hướng dẫn chạy và cấu hình nhiều model](../spikes/01_instabox_openswe/README.md).
-Kết quả hiện tại: **139 test offline PASS** (gồm Phase 1 và harness Phase 2;
+Kết quả hiện tại: **147 test offline PASS** (gồm Phase 1 và harness Phase 2;
 Phase 2 vẫn `LIVE NOT RUN`). Theo log người dùng cung cấp,
 **Phase 1 live PASS** với Dev `cx/gpt-6.1-sol` và Reviewer
 `ag/claude-sonnet-4-6`, gọi qua 9Router local và ghi file trên InstaBox; VM đã xóa.

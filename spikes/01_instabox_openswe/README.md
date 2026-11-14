@@ -123,11 +123,11 @@ một model ID bình thường.
 
 Test 9Router dùng HTTP transport giả lập, không gọi model hoặc InstaBox thật.
 Phase 1 kiểm tra sandbox và agent ghi file (`LIVE PASS` với Dev/Reviewer theo log người dùng);
-harness Phase 2 đạt `OFFLINE PASS` (139 tests toàn spike) và hiện `LIVE NOT RUN`.
+harness Phase 2 đạt `OFFLINE PASS` (147 tests toàn spike) và hiện `LIVE NOT RUN`.
 
 ## Phase 2: Bugfix trên repo thử nghiệm & Verify độc lập (`OFFLINE PASS` / `LIVE NOT RUN`)
 
-Phạm vi Phase 2 chỉ kiểm chứng luồng Deep Agent sửa bug + `pre_agent_snapshot_id` + Hard Gates + chạy `pytest` độc lập ngoài agent trên `spikes/01_instabox_openswe/fixtures/mini_bug_repo` (chưa phải hệ thống AI SDLC hoàn chỉnh).
+Phạm vi Phase 2 chỉ kiểm chứng luồng Deep Agent sửa bug + `pre_agent_snapshot_id` + Hard Gates + verify `pytest` độc lập trên `spikes/01_instabox_openswe/fixtures/mini_bug_repo` (chưa phải hệ thống AI SDLC hoàn chỉnh). Lưu ý: bước Red chỉ chạy lại file test mới trên baseline *sau khi agent xong* để xác nhận test bắt được lỗi ở baseline (chưa chứng minh agent làm đúng thứ tự TDD), và Green luôn chạy trên một VM sạch / lần restore snapshot tách biệt khỏi Red với yêu cầu `pytest` exit code `0`.
 
 1. Nạp biến môi trường 9Router local và InstaBox:
 
@@ -142,18 +142,18 @@ $env:INSTABOX_API_KEY = "<instabox-api-key>"
 .\spikes\01_instabox_openswe\.venv\Scripts\python.exe spikes\01_instabox_openswe\run_phase2_spike.py --preflight-only
 ```
 
-3. Chạy Phase 2 live mặc định trên `fixtures/mini_bug_repo` (vai trò `dev`, verify bằng VM sạch từ `pre_agent_snapshot_id`):
+3. Chạy Phase 2 live mặc định trên `fixtures/mini_bug_repo` (vai trò `dev`, verify Red và Green trên các VM sạch riêng từ `pre_agent_snapshot_id`):
 
 ```powershell
 .\spikes\01_instabox_openswe\.venv\Scripts\python.exe spikes\01_instabox_openswe\run_phase2_spike.py --artifact-dir spikes/01_instabox_openswe/artifacts/phase2_run
 ```
 
-4. Hoặc dùng `--verify-mode restore` nếu muốn restore snapshot trên cùng VM thay vì tạo VM verify riêng:
+4. Hoặc dùng `--verify-mode restore` nếu muốn restore `pre_agent_snapshot_id` trên cùng VM (restore riêng cho Red và restore lại sạch trước Green):
 
 ```powershell
 .\spikes\01_instabox_openswe\.venv\Scripts\python.exe spikes\01_instabox_openswe\run_phase2_spike.py --verify-mode restore --artifact-dir spikes/01_instabox_openswe/artifacts/phase2_restore
 ```
 
 Tùy chọn chính: `--role <role>`, `--model <id>`, `--repo-dir <path>` hoặc `--repo-url <https-url>`, `--base-ref <ref>`, `--task <prompt>`, `--python-bin <abs-posix-path>`, `--allow-config-changes`, `--tdd-exempt`, `--max-agent-steps <5..200>` (mặc định `60`), `--snapshot-timeout <secs>`, `--keep-vm`.
-Artifact xuất ra khi dùng `--artifact-dir`: `patch.diff`, `red_junit.xml`, `post_junit.xml`, `verification_report.json`.
+Artifact xuất ra khi dùng `--artifact-dir`: `patch.diff`, `baseline_junit.xml`, `red_junit.xml`, `post_junit.xml`, `verification_report.json`.
 Mã thoát của `run_phase2_spike.py`: `0` (`PASS`), `1` (lỗi runtime / `CleanupIncompleteError`), `2` (lỗi cấu hình), `3` (`REJECT`), `4` (`NEEDS_HUMAN_REVIEW`).

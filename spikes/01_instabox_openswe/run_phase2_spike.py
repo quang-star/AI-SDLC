@@ -9,9 +9,11 @@ Phase 2 implements the Section 4 verification workflow from `docs/version-matrix
 4. Run a `deepagents` coding agent (`dev` role by default, capped by `--max-agent-steps`).
 5. Extract the complete diff (commits + working tree + untracked files) via a non-destructive
    temporary git index, then run static Hard Gate checks.
-6. Boot a clean verification environment from `pre_agent_snapshot_id`, verify TDD Red
-   (new test file alone fails on baseline unless `--tdd-exempt`), reset, apply the full
-   patch, verify post-run pytest (`post_status`), and enforce No Regression + Hard Gates.
+6. Boot clean isolated verification environments from `pre_agent_snapshot_id`:
+   - Post-hoc Red check (unless `--tdd-exempt`): apply only newly added test files on baseline and
+     confirm pytest fails assertions (`exit_code == 1`) with new test ID(s) failing.
+   - Green check (always in a fresh verify VM or fresh snapshot restore, never reusing Red's VM state):
+     apply the full patch cleanly and require pytest `exit_code == 0` with zero regressions.
 7. Strictly clean up all created VMs and snapshots in `finally`, failing non-zero if any
    resource cleanup is incomplete.
 """
@@ -42,9 +44,15 @@ from instabox import (
 )
 
 _THIS_DIR = Path(__file__).resolve().parent
-if str(_THIS_DIR) not in sys.path:
-    sys.path.insert(0, str(_THIS_DIR))
+_REPO_SRC = _THIS_DIR.parents[1] / "src"
+for _p in (_REPO_SRC, _THIS_DIR):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
+from ai_sdlc.repo_policy import (  # noqa: E402
+    collect_safe_repo_files,
+    upload_block_reason as _upload_block_reason,
+)
 from instabox_sandbox import InstaBoxSandbox, SandboxInitializationError, _validate_workdir  # noqa: E402
 from model_routing import ModelTarget, select_model_targets  # noqa: E402
 from phase2_verifier import (  # noqa: E402
@@ -85,7 +93,6 @@ DEFAULT_FIXTURE_TASK: Final[str] = (
 )
 DEFAULT_MAX_AGENT_STEPS: Final[int] = 60
 DEFAULT_SNAPSHOT_TIMEOUT_SECONDS: Final[float] = 600.0
-_IGNORED_UPLOAD_DIRS: Final[frozenset[str]] = frozenset({".git", "__pycache__", ".pytest_cache", ".venv"})
 
 VerifyMode = Literal["fresh-vm", "restore"]
 
@@ -133,6 +140,7 @@ class Phase2RunSummary:
     post_agent_head_sha: str
     verification: Phase2VerificationResult
     patch_bytes: bytes = field(repr=False)
+    verify_red_machine_id: str | None = None
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -337,15 +345,11 @@ def _exec_checked(
 
 
 def _collect_local_repo_files(repo_dir: Path) -> list[tuple[str, bytes]]:
-    files: list[tuple[str, bytes]] = []
-    for root, dirs, filenames in os.walk(repo_dir):
-        dirs[:] = sorted(d for d in dirs if d not in _IGNORED_UPLOAD_DIRS)
-        for fname in sorted(filenames):
-            if fname.endswith((".pyc", ".pyo")):
-                continue
-            full = Path(root) / fname
-            rel = full.relative_to(repo_dir).as_posix()
-            files.append((rel, full.read_bytes()))
+    files = collect_safe_repo_files(
+        repo_dir,
+        on_skip_dir=lambda rel_dir: print(f"[UPLOAD] Skipping symlink directory before traversal: {rel_dir}"),
+        on_skip_file=lambda rel, reason: print(f"[UPLOAD] Skipping blocked/secret file before read: {rel} ({reason})"),
+    )
     if not files:
         raise SpikeConfigError(f"No uploadable files found in repo_dir {repo_dir}.")
     return files
@@ -439,7 +443,9 @@ def _resolve_clean_pytest_python(
     if check_res.exit_code == 0:
         return base_py
 
-    venv_dir = f"/opt/phase2_pytest_{run_id}"
+    # InstaBox's unprivileged guest user owns /data, unlike /opt. Keep the
+    # runner outside the checkout so git clean cannot delete it during verify.
+    venv_dir = f"/data/phase2_pytest_{run_id}"
     venv_py = f"{venv_dir}/bin/python"
     print(f"[PROVISION] System pytest not found; bootstrapping isolated runner venv at {venv_dir}...")
     _exec_checked(
@@ -488,6 +494,7 @@ def _run_pytest_and_collect_junit(
     junit_path: str,
     cache_dir: str,
     timeout: int,
+    allow_missing_xml_on_nonzero: bool = False,
 ) -> tuple[int, bytes, dict[str, TestOutcome]]:
     """Run pytest cleanly outside repo cache and return `(exit_code, xml_bytes, outcome_map)`."""
     cmd = (
@@ -505,7 +512,15 @@ def _run_pytest_and_collect_junit(
     )
     if res.timed_out:
         raise RuntimeError(f"Pytest execution timed out after {timeout}s")
-    xml_bytes = client.files.read_bytes(machine_id, junit_path, timeout=60)
+    try:
+        xml_bytes = client.files.read_bytes(machine_id, junit_path, timeout=60)
+    except NotFoundError:
+        if allow_missing_xml_on_nonzero and res.exit_code != 0:
+            return res.exit_code, b"", {}
+        raise
+    if not xml_bytes or not xml_bytes.strip():
+        if allow_missing_xml_on_nonzero and res.exit_code != 0:
+            return res.exit_code, b"", {}
     outcomes = parse_junit_xml(xml_bytes)
     return res.exit_code, xml_bytes, outcomes
 
@@ -680,84 +695,228 @@ def _run_agent_bugfix_turn(
     )
 
 
-def _verify_on_clean_snapshot(
+def _prepare_clean_snapshot_workspace(
     client: Client,
-    verify_machine_id: str,
+    machine_id: str,
     *,
     workdir: str,
     base_commit_sha: str,
-    clean_python: str,
-    patch_bytes: bytes,
-    tests_only_patch: bytes,
-    tdd_exempt: bool,
-    timeout: int,
-    run_id: str,
-) -> tuple[dict[str, TestOutcome] | None, bytes | None, dict[str, TestOutcome], bytes]:
-    """Run Red-on-baseline (optional if tdd_exempt) then full patch + Post verification."""
-    # Ensure clean starting state at base_commit_sha before applying anything.
-    actual_sha = _exec_checked(client, verify_machine_id, "git rev-parse HEAD", cwd=workdir, timeout=30).strip()
+) -> None:
+    """Confirm the verification workspace is cleanly checked out at `base_commit_sha`."""
+    actual_sha = _exec_checked(client, machine_id, "git rev-parse HEAD", cwd=workdir, timeout=30).strip()
     if actual_sha != base_commit_sha:
         raise RuntimeError(
             f"Clean verification VM HEAD mismatch: expected {base_commit_sha}, got {actual_sha}"
         )
     _exec_checked(
         client,
-        verify_machine_id,
+        machine_id,
         f"git reset -q --hard {shlex.quote(base_commit_sha)} && git clean -fdxq",
         cwd=workdir,
         timeout=60,
     )
 
-    red_status: dict[str, TestOutcome] | None = None
-    red_xml: bytes | None = None
-    if not tdd_exempt and tests_only_patch:
-        red_patch_path = f"/tmp/phase2_verify_red_{run_id}.patch"
-        client.files.write(verify_machine_id, red_patch_path, tests_only_patch, timeout=60)
-        _exec_checked(
-            client,
-            verify_machine_id,
-            f"git apply --check {shlex.quote(red_patch_path)} && git apply {shlex.quote(red_patch_path)}",
-            cwd=workdir,
-            timeout=60,
-        )
-        red_exit, red_xml, red_status = _run_pytest_and_collect_junit(
-            client,
-            verify_machine_id,
-            workdir=workdir,
-            python_bin=clean_python,
-            junit_path=f"/tmp/phase2_red_{run_id}.xml",
-            cache_dir=f"/tmp/phase2_cache_red_{run_id}",
-            timeout=timeout,
-        )
-        print(f"[VERIFY:RED] pytest exit_code={red_exit}, cases={len(red_status)}")
-        _exec_checked(
-            client,
-            verify_machine_id,
-            f"git reset -q --hard {shlex.quote(base_commit_sha)} && git clean -fdxq",
-            cwd=workdir,
-            timeout=60,
-        )
 
-    full_patch_path = f"/tmp/phase2_verify_full_{run_id}.patch"
-    client.files.write(verify_machine_id, full_patch_path, patch_bytes, timeout=60)
+def _apply_patch_and_run_pytest(
+    client: Client,
+    machine_id: str,
+    *,
+    workdir: str,
+    base_commit_sha: str,
+    clean_python: str,
+    patch_bytes: bytes,
+    stage_label: str,
+    patch_path: str,
+    junit_path: str,
+    cache_dir: str,
+    timeout: int,
+) -> tuple[int, bytes, dict[str, TestOutcome]]:
+    """Apply `patch_bytes` on a fresh snapshot checkout and run pytest with strict exit tracking."""
+    _prepare_clean_snapshot_workspace(
+        client,
+        machine_id,
+        workdir=workdir,
+        base_commit_sha=base_commit_sha,
+    )
+    client.files.write(machine_id, patch_path, patch_bytes, timeout=60)
     _exec_checked(
         client,
-        verify_machine_id,
-        f"git apply --check {shlex.quote(full_patch_path)} && git apply {shlex.quote(full_patch_path)}",
+        machine_id,
+        f"git apply --check {shlex.quote(patch_path)} && git apply {shlex.quote(patch_path)}",
         cwd=workdir,
         timeout=60,
     )
-    post_exit, post_xml, post_status = _run_pytest_and_collect_junit(
+    exit_code, xml_bytes, outcomes = _run_pytest_and_collect_junit(
         client,
-        verify_machine_id,
+        machine_id,
         workdir=workdir,
         python_bin=clean_python,
-        junit_path=f"/tmp/phase2_post_{run_id}.xml",
-        cache_dir=f"/tmp/phase2_cache_post_{run_id}",
+        junit_path=junit_path,
+        cache_dir=cache_dir,
         timeout=timeout,
+        allow_missing_xml_on_nonzero=True,
     )
-    print(f"[VERIFY:POST] pytest exit_code={post_exit}, cases={len(post_status)}")
-    return red_status, red_xml, post_status, post_xml
+    print(f"[VERIFY:{stage_label}] pytest exit_code={exit_code}, cases={len(outcomes)}")
+    return exit_code, xml_bytes, outcomes
+
+
+def _boot_fresh_verify_vm(
+    client: Client,
+    *,
+    stage_tag: str,
+    pre_agent_snapshot_id: str,
+    workdir: str,
+    default_timeout: int,
+    run_id: str,
+    tracked_machines: list[str],
+    machine_ops: dict[str, str | None],
+) -> str:
+    """Create and connect a clean verify VM from `pre_agent_snapshot_id` for a single phase."""
+    vm_name = f"spike01-p2-verify-{stage_tag}-{int(time.time())}-{run_id}"
+    vm_id, op_id = create_vm_with_early_tracking(
+        client,
+        vm_name=vm_name,
+        template=None,
+        snapshot_id=pre_agent_snapshot_id,
+        metadata={"spike": f"01-phase2-verify-{stage_tag}", "spike_run_id": run_id},
+        idempotency_key=f"ik_p2_verify_{stage_tag}_{run_id}",
+        run_id=run_id,
+        has_explicit_name=False,
+        tracked_machine_ids=tracked_machines,
+        wait_timeout=CREATE_WAIT_TIMEOUT_SECONDS,
+    )
+    machine_ops[vm_id] = op_id
+    InstaBoxSandbox.create_or_reconnect(
+        client,
+        machine_id=vm_id,
+        workdir=workdir,
+        default_timeout=default_timeout,
+        ensure_workdir=False,
+    )
+    return vm_id
+
+
+def _release_created_vm_now(
+    client: Client,
+    *,
+    machine_id: str,
+    run_id: str,
+    keep_vm: bool,
+    tracked_machines: list[str],
+    machine_ops: Mapping[str, str | None],
+    pre_retained_machines: list[str],
+) -> None:
+    """Delete a created temporary VM immediately so concurrent VM count stays <= 1."""
+    if keep_vm or machine_id not in tracked_machines:
+        return
+    tracked_machines.remove(machine_id)
+    err = delete_vm_strict(
+        client,
+        machine_id=machine_id,
+        operation_id=machine_ops.get(machine_id),
+        run_id=run_id,
+    )
+    if err is not None:
+        pre_retained_machines.append(machine_id)
+        raise err
+
+
+def _restore_vm_to_snapshot(
+    client: Client,
+    *,
+    machine_id: str,
+    snapshot_id: str,
+    workdir: str,
+    default_timeout: int,
+) -> None:
+    """Restore an existing VM back to `snapshot_id` and reconnect its sandbox."""
+    client.machines.restore(
+        machine_id,
+        snapshot_id,
+        wait=True,
+        timeout=CREATE_WAIT_TIMEOUT_SECONDS,
+    )
+    InstaBoxSandbox.create_or_reconnect(
+        client,
+        machine_id=machine_id,
+        workdir=workdir,
+        default_timeout=default_timeout,
+        ensure_workdir=False,
+    )
+
+
+def _run_isolated_verification_stage(
+    client: Client,
+    *,
+    stage_tag: Literal["red", "green"],
+    verify_mode: VerifyMode,
+    agent_machine_id: str,
+    pre_agent_snapshot_id: str,
+    workdir: str,
+    default_timeout: int,
+    base_commit_sha: str,
+    clean_python: str,
+    patch_bytes: bytes,
+    run_id: str,
+    keep_vm: bool,
+    tracked_machines: list[str],
+    machine_ops: dict[str, str | None],
+    pre_retained_machines: list[str],
+) -> tuple[str | None, int, bytes, dict[str, TestOutcome]]:
+    """Run either the Red or Green stage against an untouched `pre_agent_snapshot_id` state."""
+    is_red = stage_tag == "red"
+    stage_label = "RED" if is_red else "POST"
+    patch_file_tag = "red" if is_red else "full"
+    junit_tag = "red" if is_red else "post"
+
+    created_verify_id: str | None = None
+    if verify_mode == "fresh-vm":
+        created_verify_id = _boot_fresh_verify_vm(
+            client,
+            stage_tag=stage_tag,
+            pre_agent_snapshot_id=pre_agent_snapshot_id,
+            workdir=workdir,
+            default_timeout=default_timeout,
+            run_id=run_id,
+            tracked_machines=tracked_machines,
+            machine_ops=machine_ops,
+        )
+        target_machine_id = created_verify_id
+    else:
+        _restore_vm_to_snapshot(
+            client,
+            machine_id=agent_machine_id,
+            snapshot_id=pre_agent_snapshot_id,
+            workdir=workdir,
+            default_timeout=default_timeout,
+        )
+        target_machine_id = agent_machine_id
+
+    exit_code, xml_bytes, outcomes = _apply_patch_and_run_pytest(
+        client,
+        target_machine_id,
+        workdir=workdir,
+        base_commit_sha=base_commit_sha,
+        clean_python=clean_python,
+        patch_bytes=patch_bytes,
+        stage_label=stage_label,
+        patch_path=f"/tmp/phase2_verify_{patch_file_tag}_{run_id}.patch",
+        junit_path=f"/tmp/phase2_{junit_tag}_{run_id}.xml",
+        cache_dir=f"/tmp/phase2_cache_{junit_tag}_{run_id}",
+        timeout=default_timeout,
+    )
+    if created_verify_id is not None and is_red:
+        # Tear down Red VM before creating Green VM so max concurrent VMs stays 1.
+        _release_created_vm_now(
+            client,
+            machine_id=created_verify_id,
+            run_id=run_id,
+            keep_vm=keep_vm,
+            tracked_machines=tracked_machines,
+            machine_ops=machine_ops,
+            pre_retained_machines=pre_retained_machines,
+        )
+    return created_verify_id, exit_code, xml_bytes, outcomes
 
 
 def _write_artifacts(
@@ -778,6 +937,7 @@ def _write_artifacts(
     report_payload: dict[str, Any] = {
         "run_id": summary.run_id,
         "agent_machine_id": summary.agent_machine_id,
+        "verify_red_machine_id": summary.verify_red_machine_id,
         "verify_machine_id": summary.verify_machine_id,
         "pre_agent_snapshot_id": summary.pre_agent_snapshot_id,
         "base_commit_sha": summary.base_commit_sha,
@@ -820,6 +980,7 @@ def run_phase2_spike(
     primary_exc: BaseException | None = None
 
     agent_machine_id = ""
+    verify_red_machine_id: str | None = None
     verify_machine_id: str | None = None
     pre_agent_snapshot_id: str | None = None
 
@@ -948,6 +1109,11 @@ def run_phase2_spike(
             f"[BASELINE] commit={base_commit_sha[:12]}, exit_code={base_exit}, "
             f"cases={len(baseline_status)}, existing_tests={len(existing_test_files)}"
         )
+        if base_exit not in (0, 1):
+            raise RuntimeError(
+                f"Baseline pytest failed unexpectedly with exit_code={base_exit} (expected 0 or 1); "
+                "cannot establish a clean baseline."
+            )
 
         # Remove temp artifacts and sync before taking pre_agent_snapshot_id.
         _exec_checked(
@@ -1000,8 +1166,10 @@ def run_phase2_spike(
 
         red_status: dict[str, TestOutcome] | None = None
         red_xml: bytes | None = None
+        red_exit: int | None = None
         post_status: dict[str, TestOutcome] | None = None
         post_xml: bytes | None = None
+        post_exit: int | None = None
 
         if not reject_reasons:
             tests_only_patch = b""
@@ -1015,70 +1183,55 @@ def run_phase2_spike(
                     new_test_files=new_test_files,
                     run_id=effective_run_id,
                 )
+            run_red = bool(new_test_files and not config.tdd_exempt and tests_only_patch)
 
             if config.verify_mode == "fresh-vm":
-                # Delete created agent VM before spawning verify VM so concurrent VM count stays 1.
-                if agent_machine_id in tracked_machines and not config.keep_vm:
-                    tracked_machines.remove(agent_machine_id)
-                    err = delete_vm_strict(
-                        client,
-                        machine_id=agent_machine_id,
-                        operation_id=machine_ops.get(agent_machine_id),
-                        run_id=effective_run_id,
-                    )
-                    if err is not None:
-                        pre_retained_machines.append(agent_machine_id)
-                        raise err
-
-                verify_vm_name = f"spike01-p2-verify-{int(time.time())}-{effective_run_id}"
-                verify_machine_id, verify_op_id = create_vm_with_early_tracking(
-                    client,
-                    vm_name=verify_vm_name,
-                    template=None,
-                    snapshot_id=pre_agent_snapshot_id,
-                    metadata={"spike": "01-phase2-verify", "spike_run_id": effective_run_id},
-                    idempotency_key=f"ik_p2_verify_{effective_run_id}",
-                    run_id=effective_run_id,
-                    has_explicit_name=False,
-                    tracked_machine_ids=tracked_machines,
-                    wait_timeout=CREATE_WAIT_TIMEOUT_SECONDS,
-                )
-                machine_ops[verify_machine_id] = verify_op_id
-                InstaBoxSandbox.create_or_reconnect(
-                    client,
-                    machine_id=verify_machine_id,
-                    workdir=config.workdir,
-                    default_timeout=config.default_timeout,
-                    ensure_workdir=False,
-                )
-                target_verify_id = verify_machine_id
-            else:
-                client.machines.restore(
-                    agent_machine_id,
-                    pre_agent_snapshot_id,
-                    wait=True,
-                    timeout=CREATE_WAIT_TIMEOUT_SECONDS,
-                )
-                InstaBoxSandbox.create_or_reconnect(
+                # Delete agent VM first so Red/Green verify VMs stay within 1 concurrent VM.
+                _release_created_vm_now(
                     client,
                     machine_id=agent_machine_id,
+                    run_id=effective_run_id,
+                    keep_vm=config.keep_vm,
+                    tracked_machines=tracked_machines,
+                    machine_ops=machine_ops,
+                    pre_retained_machines=pre_retained_machines,
+                )
+
+            if run_red:
+                verify_red_machine_id, red_exit, red_xml, red_status = _run_isolated_verification_stage(
+                    client,
+                    stage_tag="red",
+                    verify_mode=config.verify_mode,
+                    agent_machine_id=agent_machine_id,
+                    pre_agent_snapshot_id=pre_agent_snapshot_id,
                     workdir=config.workdir,
                     default_timeout=config.default_timeout,
-                    ensure_workdir=False,
+                    base_commit_sha=base_commit_sha,
+                    clean_python=clean_python,
+                    patch_bytes=tests_only_patch,
+                    run_id=effective_run_id,
+                    keep_vm=config.keep_vm,
+                    tracked_machines=tracked_machines,
+                    machine_ops=machine_ops,
+                    pre_retained_machines=pre_retained_machines,
                 )
-                target_verify_id = agent_machine_id
 
-            red_status, red_xml, post_status, post_xml = _verify_on_clean_snapshot(
+            verify_machine_id, post_exit, post_xml, post_status = _run_isolated_verification_stage(
                 client,
-                target_verify_id,
+                stage_tag="green",
+                verify_mode=config.verify_mode,
+                agent_machine_id=agent_machine_id,
+                pre_agent_snapshot_id=pre_agent_snapshot_id,
                 workdir=config.workdir,
+                default_timeout=config.default_timeout,
                 base_commit_sha=base_commit_sha,
                 clean_python=clean_python,
                 patch_bytes=patch_bytes,
-                tests_only_patch=tests_only_patch,
-                tdd_exempt=config.tdd_exempt,
-                timeout=config.default_timeout,
                 run_id=effective_run_id,
+                keep_vm=config.keep_vm,
+                tracked_machines=tracked_machines,
+                machine_ops=machine_ops,
+                pre_retained_machines=pre_retained_machines,
             )
 
         tdd_evidence = (
@@ -1093,6 +1246,8 @@ def run_phase2_spike(
             baseline_status=baseline_status,
             post_status=post_status,
             red_status=red_status,
+            red_exit_code=red_exit,
+            post_exit_code=post_exit,
             baseline_config_hashes=baseline_config_hashes,
             post_agent_config_hashes=post_config_hashes,
             allow_config_changes=config.allow_config_changes,
@@ -1108,6 +1263,7 @@ def run_phase2_spike(
             post_agent_head_sha=post_agent_head_sha,
             verification=verification,
             patch_bytes=patch_bytes,
+            verify_red_machine_id=verify_red_machine_id,
         )
         if config.artifact_dir is not None:
             _write_artifacts(

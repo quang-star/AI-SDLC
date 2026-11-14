@@ -6,13 +6,26 @@ operate strictly on data extracted outside the coding agent.
 
 from __future__ import annotations
 
-import fnmatch
 import posixpath
-import re
+import sys
 import xml.etree.ElementTree as ET
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any, Literal
+
+_REPO_SRC = Path(__file__).resolve().parents[2] / "src"
+if str(_REPO_SRC) not in sys.path:
+    sys.path.insert(0, str(_REPO_SRC))
+
+from ai_sdlc.repo_policy import (  # noqa: E402
+    TEST_FILE_RE as _TEST_FILE_RE,
+    collect_existing_test_files,
+    collect_protected_config_paths,
+    is_protected_config_path,
+    is_test_path,
+    normalize_repo_rel_path,
+)
 
 TestOutcome = Literal["passed", "failed", "error", "skipped"]
 Phase2Verdict = Literal["PASS", "NEEDS_HUMAN_REVIEW", "REJECT"]
@@ -24,28 +37,7 @@ _OUTCOME_PRIORITY: dict[TestOutcome, int] = {
     "passed": 1,
 }
 
-_PROTECTED_EXACT_PATHS: frozenset[str] = frozenset(
-    {
-        "pyproject.toml",
-        "pytest.ini",
-        "setup.cfg",
-        "tox.ini",
-        "conftest.py",
-        "setup.py",
-        "uv.lock",
-        "poetry.lock",
-        ".gitlab-ci.yml",
-    }
-)
-
-_PROTECTED_PREFIXES: tuple[str, ...] = (
-    ".github/",
-    ".circleci/",
-    "ci/",
-)
-
 _FORBIDDEN_GIT_MODES: frozenset[str] = frozenset({"120000", "160000"})
-_TEST_FILE_RE = re.compile(r"^(?:test_.+|.+_test)\.py$")
 
 
 @dataclass(frozen=True)
@@ -78,71 +70,12 @@ class Phase2VerificationResult:
     post_counts: dict[str, int]
     tdd_exempt: bool
     tdd_exempt_evidence: str | None
+    red_exit_code: int | None = None
+    post_exit_code: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to JSON-compatible dictionary."""
         return asdict(self)
-
-
-def normalize_repo_rel_path(path: str) -> str:
-    """Normalize a repository-relative POSIX path and reject traversal/absolute paths."""
-    if not isinstance(path, str):
-        raise ValueError(f"Path must be str, got {type(path).__name__}")
-    if "\x00" in path:
-        raise ValueError("Path cannot contain NUL bytes")
-    cleaned = path.replace("\\", "/").strip()
-    if not cleaned:
-        raise ValueError("Path cannot be empty")
-    if cleaned.startswith("/") or (len(cleaned) >= 2 and cleaned[1] == ":"):
-        raise ValueError(f"Expected repo-relative path, got {path!r}")
-    norm = posixpath.normpath(cleaned)
-    if norm in ("", ".") or norm == ".." or norm.startswith("../"):
-        raise ValueError(f"Invalid repo-relative path traversal: {path!r}")
-    return norm
-
-
-def is_protected_config_path(path: str) -> bool:
-    """Return True if `path` belongs to protected build/test/CI configuration files."""
-    norm = normalize_repo_rel_path(path)
-    if norm in _PROTECTED_EXACT_PATHS:
-        return True
-    if any(norm.startswith(prefix) for prefix in _PROTECTED_PREFIXES):
-        return True
-    base = posixpath.basename(norm)
-    if fnmatch.fnmatch(norm, "requirements*.txt") or norm.startswith("requirements/") and base.endswith(".txt"):
-        return True
-    return False
-
-
-def is_test_path(path: str) -> bool:
-    """Return True if `path` is a Python test module/helper under tests/ or named test_*.py."""
-    norm = normalize_repo_rel_path(path)
-    if is_protected_config_path(norm) or not norm.endswith(".py"):
-        return False
-    parts = norm.split("/")
-    if any(segment in ("tests", "test") for segment in parts[:-1]):
-        return True
-    return bool(_TEST_FILE_RE.match(parts[-1]))
-
-
-def collect_existing_test_files(repo_files: Iterable[str]) -> tuple[str, ...]:
-    """Return sorted existing test files present at `base_commit_sha`."""
-    out: set[str] = set()
-    for raw in repo_files:
-        norm = normalize_repo_rel_path(raw)
-        if is_test_path(norm):
-            out.add(norm)
-    return tuple(sorted(out))
-
-
-def collect_protected_config_paths(repo_files: Iterable[str]) -> tuple[str, ...]:
-    """Return sorted protected config paths present in `repo_files`."""
-    out: set[str] = set()
-    for raw in repo_files:
-        norm = normalize_repo_rel_path(raw)
-        if is_protected_config_path(norm):
-            out.add(norm)
-    return tuple(sorted(out))
 
 
 def parse_junit_xml(xml_content: bytes | str) -> dict[str, TestOutcome]:
@@ -418,13 +351,20 @@ def evaluate_phase2_verification(
     baseline_status: Mapping[str, TestOutcome],
     post_status: Mapping[str, TestOutcome] | None,
     red_status: Mapping[str, TestOutcome] | None = None,
+    red_exit_code: int | None = None,
+    post_exit_code: int | None = None,
     baseline_config_hashes: Mapping[str, str] | None = None,
     post_agent_config_hashes: Mapping[str, str] | None = None,
     allow_config_changes: bool = False,
     tdd_exempt: bool = False,
     tdd_exempt_evidence: str | None = None,
 ) -> Phase2VerificationResult:
-    """Apply Hard Gates, No-Regression checks, and TDD Red->Green rules."""
+    """Apply Hard Gates, No-Regression checks, pytest exit-code checks, and post-hoc baseline Red->Green checks.
+
+    Note: The Red step replays newly added tests against the clean baseline after the agent finishes;
+    it proves those tests detect the bug on baseline (and pass with the full patch), not that the
+    agent itself authored tests chronologically before edits.
+    """
     existing_tuple = tuple(sorted(normalize_repo_rel_path(p) for p in existing_test_files))
     (
         reject_reasons,
@@ -456,6 +396,12 @@ def evaluate_phase2_verification(
             reject_reasons.append("Post-verification test suite was not executed.")
         post_counts: dict[str, int] = {}
     else:
+        if post_exit_code is not None and post_exit_code != 0:
+            reject_reasons.append(
+                f"Post-verification pytest exited with non-zero code {post_exit_code} "
+                "(expected 0; collection, internal, interrupted, or test failures are rejected)."
+            )
+
         if not post_status:
             reject_reasons.append("Post-verification test suite collected zero test cases.")
 
@@ -491,11 +437,16 @@ def evaluate_phase2_verification(
         if not tdd_exempt:
             if not new_test_files:
                 reject_reasons.append(
-                    "TDD gate failed: no newly added test file (`tests/...` / `test_*.py`) outside existing tests."
+                    "Baseline-fail (Red) gate failed: no newly added test file (`tests/...` / `test_*.py`) outside existing tests."
                 )
             elif red_status is None:
-                reject_reasons.append("TDD gate failed: Red verification run was not executed.")
+                reject_reasons.append("Baseline-fail (Red) gate failed: Red verification run was not executed.")
             else:
+                if red_exit_code is not None and red_exit_code != 1:
+                    reject_reasons.append(
+                        f"Red baseline-check pytest exited with unexpected code {red_exit_code} "
+                        "(expected 1 from test assertion failures, not 0/interrupted/collection/internal error)."
+                    )
                 for tid in new_test_ids:
                     if (
                         _test_id_belongs_to_paths(tid, new_test_files, existing_tuple)
@@ -505,7 +456,7 @@ def evaluate_phase2_verification(
                         red_to_green_ids.append(tid)
                 if not red_to_green_ids:
                     reject_reasons.append(
-                        "TDD gate failed: no new test ID in a newly added test file transitioned `failed` (Red) -> `passed` (Green) on the pre-agent snapshot."
+                        "Baseline-fail (Red) gate failed: no new test ID in a newly added test file transitioned `failed` (baseline) -> `passed` (full patch) on the pre-agent snapshot."
                     )
         else:
             if not tdd_exempt_evidence or not tdd_exempt_evidence.strip():
@@ -538,4 +489,6 @@ def evaluate_phase2_verification(
         post_counts=post_counts,
         tdd_exempt=tdd_exempt,
         tdd_exempt_evidence=tdd_exempt_evidence.strip() if tdd_exempt_evidence else None,
+        red_exit_code=red_exit_code,
+        post_exit_code=post_exit_code,
     )

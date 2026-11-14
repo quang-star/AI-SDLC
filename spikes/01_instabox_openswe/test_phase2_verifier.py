@@ -72,11 +72,13 @@ def test_path_classification_and_normalization() -> None:
     ):
         assert is_protected_config_path(protected) is True
 
-    assert is_protected_config_path("tests/conftest.py") is False
+    assert is_protected_config_path("tests/conftest.py") is True
+    assert is_protected_config_path("tests/unit/conftest.py") is True
+    assert is_protected_config_path("src/pkg/conftest.py") is True
     assert is_protected_config_path("src/mini_ledger/billing.py") is False
 
     assert is_test_path("tests/test_billing.py") is True
-    assert is_test_path("tests/conftest.py") is True
+    assert is_test_path("tests/conftest.py") is False
     assert is_test_path("pkg/sub_test.py") is True
     assert is_test_path("conftest.py") is False
     assert is_test_path("src/mini_ledger/billing.py") is False
@@ -87,8 +89,8 @@ def test_path_classification_and_normalization() -> None:
         "tests/test_billing.py",
         "tests/conftest.py",
     ]
-    assert collect_existing_test_files(repo_files) == ("tests/conftest.py", "tests/test_billing.py")
-    assert collect_protected_config_paths(repo_files) == ("pyproject.toml",)
+    assert collect_existing_test_files(repo_files) == ("tests/test_billing.py",)
+    assert collect_protected_config_paths(repo_files) == ("pyproject.toml", "tests/conftest.py")
 
 
 def test_junit_xml_parsing_handles_duplicates_and_errors() -> None:
@@ -274,6 +276,60 @@ def test_evaluate_verdicts_across_hard_gates() -> None:
         tdd_exempt_evidence="Post suite failed.",
     )
     assert res_exempt_regress.verdict == "REJECT"
+
+    # 10. Nested conftest.py added or edited -> REJECT (or NEEDS_HUMAN_REVIEW if allow_config_changes=True)
+    res_nested_conftest = evaluate_phase2_verification(
+        existing_test_files=("tests/test_billing.py",),
+        changed_entries=[*good_changes, ChangedFileEntry("A", "tests/conftest.py", new_mode="100644")],
+        patch_bytes=b"diff --git ...",
+        baseline_status=base_status,
+        red_status=red_status,
+        post_status=post_status,
+    )
+    assert res_nested_conftest.verdict == "REJECT"
+    assert res_nested_conftest.touched_protected_configs == ("tests/conftest.py",)
+
+    res_nested_conftest_review = evaluate_phase2_verification(
+        existing_test_files=("tests/test_billing.py",),
+        changed_entries=[*good_changes, ChangedFileEntry("A", "tests/sub/conftest.py", new_mode="100644")],
+        patch_bytes=b"diff --git ...",
+        baseline_status=base_status,
+        red_status=red_status,
+        post_status=post_status,
+        allow_config_changes=True,
+    )
+    assert res_nested_conftest_review.verdict == "NEEDS_HUMAN_REVIEW"
+    assert res_nested_conftest_review.touched_protected_configs == ("tests/sub/conftest.py",)
+
+    # 11. Non-zero post pytest exit code (interrupted/collection/internal/empty) MUST REJECT even with passing XML
+    for bad_post_code in (1, 2, 3, 4, 5):
+        res_bad_post_exit = evaluate_phase2_verification(
+            existing_test_files=("tests/test_billing.py",),
+            changed_entries=good_changes,
+            patch_bytes=b"diff --git ...",
+            baseline_status=base_status,
+            red_status=red_status,
+            red_exit_code=1,
+            post_status=post_status,
+            post_exit_code=bad_post_code,
+        )
+        assert res_bad_post_exit.verdict == "REJECT"
+        assert res_bad_post_exit.post_exit_code == bad_post_code
+
+    # 12. Unexpected Red pytest exit code (e.g., 2=collection error or 0=all passed) MUST REJECT
+    for bad_red_code in (0, 2, 3, 5):
+        res_bad_red_exit = evaluate_phase2_verification(
+            existing_test_files=("tests/test_billing.py",),
+            changed_entries=good_changes,
+            patch_bytes=b"diff --git ...",
+            baseline_status=base_status,
+            red_status=red_status,
+            red_exit_code=bad_red_code,
+            post_status=post_status,
+            post_exit_code=0,
+        )
+        assert res_bad_red_exit.verdict == "REJECT"
+        assert res_bad_red_exit.red_exit_code == bad_red_code
 
 
 def test_real_git_and_pytest_end_to_end_on_mini_bug_fixture(tmp_path: Path) -> None:
