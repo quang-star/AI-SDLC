@@ -1,0 +1,26 @@
+[
+  {
+    "id": "ba-ambiguous-01",
+    "category": "ambiguous",
+    "requirement_text": "Improve the app and make it better etc.",
+    "expect_clarifications": true
+  },
+  {
+    "id": "ba-contradiction-02",
+    "category": "contradictory",
+    "requirement_text": "Always enable auth checks on /health and never validate auth tokens on /health.",
+    "expect_clarifications": true
+  },
+  {
+    "id": "ba-hallucinated-path-03",
+    "category": "out_of_scope",
+    "requirement_text": "Modify src/nonexistent/unicorn.py to fix crash.",
+    "expect_clarifications": true
+  },
+  {
+    "id": "ba-grounded-py-04",
+    "category": "grounded",
+    "requirement_text": "Update add_numbers in src/app/main.py to validate integer arguments and raise TypeError on strings.",
+    "expect_clarifications": false
+  }
+]

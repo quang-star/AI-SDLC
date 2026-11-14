@@ -1,0 +1,114 @@
+{
+  "version": "1.0",
+  "description": "AI SDLC SaaS evaluation suite with strict dev and holdout splits across BA grounding, verifier adversarial rejection, and cost/latency budgets.",
+  "splits": {
+    "dev": [
+      {
+        "id": "eval-dev-ambig-01",
+        "suite": "ba_clarify",
+        "requirement_text": "Improve the app and make it better asap.",
+        "tracked_files": ["src/app/main.py", "tests/test_main.py"],
+        "expect_clarifications": true,
+        "expect_reason_category": "ambiguous"
+      },
+      {
+        "id": "eval-dev-contradict-02",
+        "suite": "ba_clarify",
+        "requirement_text": "Always require JWT authentication on /health and never check auth tokens on /health.",
+        "tracked_files": ["src/app/main.py", "tests/test_main.py"],
+        "expect_clarifications": true,
+        "expect_reason_category": "contradictory"
+      },
+      {
+        "id": "eval-dev-hallucinated-path-03",
+        "suite": "ba_clarify",
+        "requirement_text": "Refactor src/payments/phantom_ledger.py to fix rounding overflow.",
+        "tracked_files": ["src/app/main.py", "tests/test_main.py"],
+        "expect_clarifications": true,
+        "expect_reason_category": "missing_path"
+      },
+      {
+        "id": "eval-dev-grounded-py-04",
+        "suite": "ba_clarify",
+        "requirement_text": "Update add_numbers in src/app/main.py to validate integer arguments and raise TypeError on strings.",
+        "tracked_files": ["src/app/main.py", "tests/test_main.py"],
+        "expect_clarifications": false,
+        "expect_reason_category": "grounded"
+      },
+      {
+        "id": "eval-dev-grounded-ts-05",
+        "suite": "ba_clarify",
+        "requirement_text": "Update formatGreeting in src/App.tsx to trim whitespace and add unit coverage.",
+        "tracked_files": ["src/App.tsx", "src/main.tsx"],
+        "expect_clarifications": false,
+        "expect_reason_category": "grounded"
+      },
+      {
+        "id": "eval-dev-verifier-tautology-06",
+        "suite": "verifier_adversarial",
+        "patch_diff": "diff --git a/tests/test_fake.py b/tests/test_fake.py\n+def test_always_true():\n+    assert True\n",
+        "tracked_code_edited": false,
+        "test_output": "1 passed",
+        "expect_verdict": "FAIL"
+      },
+      {
+        "id": "eval-dev-verifier-real-pass-07",
+        "suite": "verifier_adversarial",
+        "patch_diff": "diff --git a/src/app/main.py b/src/app/main.py\n+def subtract_numbers(a: int, b: int) -> int:\n+    return a - b\n",
+        "tracked_code_edited": true,
+        "test_output": "tests/test_subtract.py::test_subtract_numbers PASSED",
+        "expect_verdict": "PASS"
+      }
+    ],
+    "holdout": [
+      {
+        "id": "eval-holdout-ambig-01",
+        "suite": "ba_clarify",
+        "requirement_text": "Fix bugs everywhere soon.",
+        "tracked_files": ["src/api.py", "tests/test_api.py"],
+        "expect_clarifications": true,
+        "expect_reason_category": "ambiguous"
+      },
+      {
+        "id": "eval-holdout-contradict-02",
+        "suite": "ba_clarify",
+        "requirement_text": "Always cache responses forever and never cache API responses under any condition.",
+        "tracked_files": ["src/api.py", "tests/test_api.py"],
+        "expect_clarifications": true,
+        "expect_reason_category": "contradictory"
+      },
+      {
+        "id": "eval-holdout-hallucinated-path-03",
+        "suite": "ba_clarify",
+        "requirement_text": "Update lib/unknown/ghost_worker.ts to normalize webhook headers.",
+        "tracked_files": ["src/server.ts", "tests/server.test.ts"],
+        "expect_clarifications": true,
+        "expect_reason_category": "missing_path"
+      },
+      {
+        "id": "eval-holdout-grounded-multi-04",
+        "suite": "ba_clarify",
+        "requirement_text": "Update src/server.ts and tests/server.test.ts to expose a /readyz JSON endpoint.",
+        "tracked_files": ["src/server.ts", "tests/server.test.ts"],
+        "expect_clarifications": false,
+        "expect_reason_category": "grounded"
+      },
+      {
+        "id": "eval-holdout-verifier-tautology-05",
+        "suite": "verifier_adversarial",
+        "patch_diff": "diff --git a/tests/test_fake2.py b/tests/test_fake2.py\n+def test_trivial():\n+    assert 1 == 1\n",
+        "tracked_code_edited": false,
+        "test_output": "1 passed",
+        "expect_verdict": "FAIL"
+      },
+      {
+        "id": "eval-holdout-verifier-real-pass-06",
+        "suite": "verifier_adversarial",
+        "patch_diff": "diff --git a/src/server.ts b/src/server.ts\n+export const multiply = (a: number, b: number) => a * b;\n",
+        "tracked_code_edited": true,
+        "test_output": "tests/server.test.ts PASSED",
+        "expect_verdict": "PASS"
+      }
+    ]
+  }
+}

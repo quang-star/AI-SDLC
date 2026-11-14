@@ -1,0 +1,99 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ai_sdlc
+      POSTGRES_USER: ai_sdlc_owner
+      POSTGRES_PASSWORD: ${POSTGRES_OWNER_PASSWORD:-ai_sdlc_owner_dev_PLACEHOLDER}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres/init-rls-role.sql:/docker-entrypoint-initdb.d/01-init-rls-role.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ai_sdlc_owner -d ai_sdlc"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_HOST_PORT:-16379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AI_SDLC_ENV: ${AI_SDLC_ENV:-development}
+      AI_SDLC_DATABASE_URL: postgresql+psycopg://ai_sdlc_owner:${POSTGRES_OWNER_PASSWORD:-ai_sdlc_owner_dev_PLACEHOLDER}@postgres:5432/ai_sdlc
+      AI_SDLC_JWT_SECRET: ${AI_SDLC_JWT_SECRET:-dev-only-jwt-secret-placeholder-32ch}
+      AI_SDLC_ENCRYPTION_KEY: ${AI_SDLC_ENCRYPTION_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    environment:
+      AI_SDLC_ENV: ${AI_SDLC_ENV:-development}
+      AI_SDLC_DATABASE_URL: postgresql+psycopg://ai_sdlc_app:ai_sdlc_app_dev_password@postgres:5432/ai_sdlc
+      AI_SDLC_REDIS_URL: ${AI_SDLC_REDIS_URL:-redis://redis:6379/0}
+      AI_SDLC_OBJECT_STORE_DIR: /data/objects
+      AI_SDLC_WORKTREE_ROOT: /data/worktrees
+      AI_SDLC_JWT_SECRET: ${AI_SDLC_JWT_SECRET:-dev-only-jwt-secret-placeholder-32ch}
+      AI_SDLC_ENCRYPTION_KEY: ${AI_SDLC_ENCRYPTION_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}
+      AI_SDLC_GITHUB_WEBHOOK_SECRET: ${AI_SDLC_GITHUB_WEBHOOK_SECRET:-}
+      AI_SDLC_STRIPE_WEBHOOK_SECRET: ${AI_SDLC_STRIPE_WEBHOOK_SECRET:-}
+    volumes:
+      - sharedata:/data
+    ports:
+      - "8000:8000"
+
+  worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.worker
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    environment:
+      AI_SDLC_ENV: ${AI_SDLC_ENV:-development}
+      AI_SDLC_DATABASE_URL: postgresql+psycopg://ai_sdlc_app:ai_sdlc_app_dev_password@postgres:5432/ai_sdlc
+      AI_SDLC_REDIS_URL: ${AI_SDLC_REDIS_URL:-redis://redis:6379/0}
+      AI_SDLC_OBJECT_STORE_DIR: /data/objects
+      AI_SDLC_WORKTREE_ROOT: /data/worktrees
+      AI_SDLC_JWT_SECRET: ${AI_SDLC_JWT_SECRET:-dev-only-jwt-secret-placeholder-32ch}
+      AI_SDLC_ENCRYPTION_KEY: ${AI_SDLC_ENCRYPTION_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}
+    volumes:
+      - sharedata:/data
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.web
+    depends_on:
+      - api
+    ports:
+      - "8080:80"
+
+volumes:
+  pgdata:
+  sharedata:

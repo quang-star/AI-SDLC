@@ -1,0 +1,14 @@
+-- Initialize non-owner, non-superuser, NOBYPASSRLS runtime role for PostgreSQL RLS enforcement
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'ai_sdlc_app') THEN
+        CREATE ROLE ai_sdlc_app LOGIN PASSWORD 'ai_sdlc_app_dev_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+    ELSE
+        ALTER ROLE ai_sdlc_app WITH NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+    END IF;
+END
+$$;
+
+GRANT USAGE ON SCHEMA public TO ai_sdlc_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ai_sdlc_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO ai_sdlc_app;
